@@ -577,11 +577,12 @@ angular.module('pictures').controller('PictureImgUploadController', ['$scope', '
     function ($scope, $timeout, $location, $window, Pictures, Authentication, FileUploader) {
         $scope.authentication = Authentication;
         $scope.loading = false;
+        $scope.uploaderUrl = 'api/pictures';
 
 
         // Create file uploader instance
         $scope.uploader = new FileUploader({
-            url: 'api/savepicture'
+            url: $scope.uploaderUrl
         });
 
         // Set the limit to one file
@@ -617,16 +618,13 @@ angular.module('pictures').controller('PictureImgUploadController', ['$scope', '
 
         // Called after the user has successfully uploaded a new picture
         $scope.uploader.onSuccessItem = function (fileItem, response, status, headers) {
-
             // Set Loading to false again
             $scope.loading = false;
-
-            console.log(response);
             // Set the picture:
             $scope.picture = response;
             // Redirect to picture view
             $scope.uploader.clearQueue();
-            //$location.path('pictures/' + response._id);
+            $location.path('pictures/' + response._id);
         };
 
         // Called after the user has failed to uploaded a new picture
@@ -650,15 +648,11 @@ angular.module('pictures').controller('PictureImgUploadController', ['$scope', '
                 $scope.uploader.queue[0].formData.push({
                     name: $scope.name
                 });
-
                 // set loadin and start upload
                 $scope.loading = true;
                 $scope.uploader.uploadAll();
-
             }
-
         };
-
     }
 ]);
 
