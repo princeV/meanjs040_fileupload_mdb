@@ -23,6 +23,11 @@ var PictureSchema = new Schema({
 		trim: true
 	},
 	sizes: [{
+		files_id:{
+			type: String,
+			default: '',
+			trim: true
+		},
 		label: {
 			type: String,
 			default: '',

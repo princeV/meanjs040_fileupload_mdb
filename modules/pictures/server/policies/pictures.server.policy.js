@@ -21,7 +21,7 @@ exports.invokeRolesPolicies = function() {
 			resources: '/api/pictures/:pictureId',
 			permissions: '*'
 		}, {
-			resources: '/api/savepicture',
+			resources: '/api/pictures/download/',
 			permissions: '*'
 		}]
 	}, {
@@ -33,8 +33,8 @@ exports.invokeRolesPolicies = function() {
 			resources: '/api/pictures/:pictureId',
 			permissions: ['get']
 		}, {
-			resources: '/api/savepicture',
-			permissions: ['get', 'post']
+			resources: '/api/pictures/download/:pictureGridFsId',
+			permissions: ['get']
 		}]
 	},{
 		roles: ['guest'],
@@ -45,8 +45,8 @@ exports.invokeRolesPolicies = function() {
 			resources: '/api/pictures/:pictureId',
 			permissions: ['get']
 		}, {
-			resources: '/api/savepicture',
-			permissions: ['get', 'post']
+			resources: '/api/pictures/download/:pictureGridFsId',
+			permissions: ['get']
 		}]
 	}]);
 };
@@ -61,7 +61,7 @@ exports.isAllowed = function(req, res, next) {
 	if (req.picture && req.user && req.picture.user.id === req.user.id) {
 		return next();
 	}
-
+	console.log(req.user);
 	// Check for user roles
 	acl.areAnyRolesAllowed(roles, req.route.path, req.method.toLowerCase(), function(err, isAllowed) {
 		if (err) {

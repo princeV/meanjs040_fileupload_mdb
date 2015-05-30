@@ -32,6 +32,7 @@
     "express-session": "~1.9.1",
     "forever": "~0.11.0",
     "glob": "~4.0.5",
+    "gridfs-stream": "^1.1.1",
     "grunt-cli": "~0.1.13",
     "grunt-nodemon": "^0.4.0",
     "helmet": "~0.4.0",

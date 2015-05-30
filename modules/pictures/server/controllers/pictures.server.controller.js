@@ -12,7 +12,9 @@ var _ = require('lodash'),
     Picture = mongoose.model('Picture'),
     errorHandler = require(path.resolve('./modules/core/server/controllers/errors.server.controller'));
 
-
+var Grid = require('gridfs-stream');
+Grid.mongo = mongoose.mongo;
+var gfs = new Grid(mongoose.connection.db);
 
 
 function calculateMinImageSize(maxWidth, maxHeight, image) {
@@ -75,6 +77,24 @@ exports.create = function (req, res) {
     });
 };
 
+
+exports.findPictureGridFs = function (req, res) {
+
+    res.set('Content-Type', req.pictureGridFs.contentType);
+    //res.set('Content-Disposition', 'attachment; filename=image.jpg');
+    var readstream = gfs.createReadStream({
+        //get the square size for tests:
+        _id: req.pictureGridFs._id
+    });
+
+    //error handling, e.g. file does not exist
+    readstream.on('error', function (err) {
+        console.log('An error occurred!', err);
+        throw err;
+    });
+
+    readstream.pipe(res);
+};
 /**
  * Show the current Picture
  */
@@ -112,11 +132,11 @@ exports.delete = function (req, res) {
     var i;
     for (i = 0; i < picture.sizes.length; i++) {
         var unlinkPictureObject = {
-            pictureSource: picture.sizes[i].source,
+            fileId: picture.sizes[i].files_id,
             /* jshint loopfunc:true */
             unlinkPicture: function (callback) {
-                // unlink the picture source - for the path the client needs to be added (done with replace via split join)
-                fs.unlink(this.pictureSource.split('pictures').join('pictures/client'), function (error) {
+                // remove the greidFS file via id:
+                gfs.remove({_id: this.fileId}, function (error) {
                     if (error) {
                         callback(error);
                     } else {
@@ -125,9 +145,10 @@ exports.delete = function (req, res) {
                 });
             }
         };
-
+        // add the function to the waterfallarray:
         waterfallFunctions.push(unlinkPictureObject.unlinkPicture.bind(unlinkPictureObject));
     }
+
     waterfallFunctions.push(
         function (callback) {
             picture.remove(function (error) {
@@ -142,7 +163,6 @@ exports.delete = function (req, res) {
 
     async.waterfall(waterfallFunctions, function (error) {
         if (error) {
-            console.log(error);
             return res.status(400).send({
                 message: errorHandler.getErrorMessage(error)
             });
@@ -151,8 +171,7 @@ exports.delete = function (req, res) {
             res.jsonp(picture);
         }
     });
-}
-;
+};
 
 /**
  * List of Pictures
@@ -176,27 +195,45 @@ exports.pictureByID = function (req, res, next, id) {
     Picture.findById(id).populate('user', 'displayName').exec(function (err, picture) {
         if (err) return next(err);
         if (!picture) return next(new Error('Failed to load Picture ' + id));
+
         req.picture = picture;
         next();
     });
+
 };
+
+
+/**
+ * Picture GridFS middleware
+ */
+exports.pictureGridFsByID = function (req, res, next, id) {
+    gfs.findOne({_id: id}, function (err, file) {
+        if (err) return next(err);
+        if (!file) return next(new Error('Failed to load File ' + id));
+
+        req.pictureGridFs = file;
+        next();
+
+    });
+
+};
+
 
 /**
  * Update profile picture
  */
 exports.uploadImage = function (req, res) {
-    var message = null;
     var picture = new Picture(req.body);
-    console.log(req.body);
     picture.user = req.user;
     picture.sizes = [];
     picture.fileName = req.files.file.originalname;
 
+    console.log(req);
+
     var pictureNameFull = req.files.file.originalname;
+    var pictureExtension = req.files.file.extension.toLowerCase();
+    var pictureMimeType = req.files.file.mimetype;
     var pictureName = pictureNameFull.substr(0, pictureNameFull.lastIndexOf('.'));
-    var pictureExtension = pictureNameFull.substr(pictureNameFull.lastIndexOf('.') + 1);
-    var picturePath = './modules/pictures/client/img/';
-    var pictureSavePath = './modules/pictures/img/';
     var pictureBuffer = req.files.file.buffer;
 
     async.waterfall([
@@ -209,98 +246,123 @@ exports.uploadImage = function (req, res) {
                 }
             });
         },
-       /* function writeFile(image, callback) {
-            var picturePathFull = pictureSavePath.concat(pictureName, '.', pictureExtension);
-            image.writeFile(picturePathFull, function (error) {
-                if (error) {
-                    callback(error);
-                } else {
-                    picture.sizes.push(
-                        {
-                            label: 'original',
-                            source: picturePathFull,
-                            width: image.width(),
-                            height: image.height()
-                        }
-                    );
-                    callback(null, image);
-                }
-            });
-        },*/
-        function writePictureMedium(image, callback) {
-            //change the picturepath:
-            var picturePathFull = picturePath.concat(pictureName, '_large.', pictureExtension);
-            var pictureSavePathFull = pictureSavePath.concat(pictureName, '_large.', pictureExtension);
+        function createLargeImageBuffer(image, callback) {
             //calculate the image height:
             var imageSize = calculateMinImageSize(1024, 768, image);
             image.batch()
                 .resize(imageSize.width, imageSize.height, 'lanczos')
-                .writeFile(picturePathFull, function (error) {
+                .toBuffer(pictureExtension, function (error, buffer) {
                     if (error) {
                         callback(error);
                     } else {
-                        picture.sizes.push(
-                            {
-                                label: 'large',
-                                source: pictureSavePathFull,
-                                width: image.width(),
-                                height: image.height()
-                            }
-                        );
-                        callback(null, image);
+                        callback(null, image, buffer);
                     }
                 });
         },
-        function writePictureMedium(image, callback) {
-            //change the picturepath:
-            var picturePathFull = picturePath.concat(pictureName, '_medium.', pictureExtension);
-            var pictureSavePathFull = pictureSavePath.concat(pictureName, '_medium.', pictureExtension);
+        function writeLargeImageGridFs(image, buffer, callback) {
+            var pictureLabel = 'large';
+            var writeStream = gfs.createWriteStream({
+                filename: pictureName + '_' + pictureLabel + '.' + pictureExtension,
+                mode: 'w',
+                content_type: pictureMimeType
+            });
+            // fs.createReadStream(picturePathFull).pipe(writeStream);
+            writeStream.write(buffer);
+            writeStream.end();
+            writeStream.on('close', function (file) {
+                var pictureSize = {
+                    files_id: file._id,
+                    label: pictureLabel,
+                    source: 'api/pictures/download/' + file._id,
+                    width: image.width(),
+                    height: image.height()
+                };
+                picture.sizes.push(pictureSize);
+                callback(null, image);
+            });
+            writeStream.on('error', function (error) {
+                callback(error);
+            });
+        },
+        function createMediumImageBuffer(image, callback) {
             //calculate the image height:
             var imageSize = calculateMinImageSize(640, 480, image);
             image.batch()
                 .resize(imageSize.width, imageSize.height, 'lanczos')
-                .writeFile(picturePathFull, function (error) {
+                .toBuffer(pictureExtension, function (error, buffer) {
                     if (error) {
                         callback(error);
                     } else {
-                        picture.sizes.push(
-                            {
-                                label: 'medium',
-                                source: pictureSavePathFull,
-                                width: image.width(),
-                                height: image.height()
-                            }
-                        );
-                        callback(null, image);
+                        callback(null, image, buffer);
                     }
                 });
         },
-        function writeSquareImage(image, callback) {
+        function writeMediumImageGridFs(image, buffer, callback) {
+            var pictureLabel = 'medium';
+            var writeStream = gfs.createWriteStream({
+                filename: pictureName + '_' + pictureLabel + '.' + pictureExtension,
+                mode: 'w',
+                content_type: pictureMimeType
+            });
+            // fs.createReadStream(picturePathFull).pipe(writeStream);
+            writeStream.write(buffer);
+            writeStream.end();
+            writeStream.on('close', function (file) {
+                var pictureSize = {
+                    files_id: file._id,
+                    label: pictureLabel,
+                    source: 'api/pictures/download/' + file._id,
+                    width: image.width(),
+                    height: image.height()
+                };
+                picture.sizes.push(pictureSize);
+                callback(null, image);
+            });
+            writeStream.on('error', function (error) {
+                callback(error);
+            });
+        },
+        function createSquareImageBuffer(image, callback) {
             //calculate the image height:
             var imageSquareSize = {width: 150, height: 150};
             var imageSize = calculateMaxImageSize(imageSquareSize.width, imageSquareSize.height, image);
-            var picturePathFull = picturePath.concat(pictureName, '_square.', pictureExtension);
-            var pictureSavePathFull = pictureSavePath.concat(pictureName, '_square.', pictureExtension);
             image.batch()
                 .resize(imageSize.width, imageSize.height, 'lanczos')
                 .crop(imageSquareSize.width, imageSquareSize.height)
-                .writeFile(picturePathFull, function (error) {
+                .toBuffer(pictureExtension, function (error, buffer) {
                     if (error) {
                         callback(error);
                     } else {
-                        picture.sizes.push(
-                            {
-                                label: 'square',
-                                source: pictureSavePathFull,
-                                width: imageSquareSize.width,
-                                height: imageSquareSize.height
-                            }
-                        );
-                        callback(null);
+                        callback(null, image, buffer);
                     }
                 });
         },
-        function savePicture(callback) {
+        function writeSquareImageGridFs(image, buffer, callback) {
+            var pictureLabel = 'square';
+            var writeStream = gfs.createWriteStream({
+                filename: pictureName + '_' + pictureLabel + '.' + pictureExtension,
+                mode: 'w',
+                content_type: pictureMimeType
+            });
+            // fs.createReadStream(picturePathFull).pipe(writeStream);
+            writeStream.write(buffer);
+            writeStream.end();
+            writeStream.on('close', function (file) {
+                var pictureSize = {
+                    files_id: file._id,
+                    label: pictureLabel,
+                    source: 'api/pictures/download/' + file._id,
+                    width: image.width(),
+                    height: image.height()
+                };
+                picture.sizes.push(pictureSize);
+                callback(null);
+            });
+            writeStream.on('error', function (error) {
+                callback(error);
+            });
+        },
+        function savePictureToDB(callback) {
             picture.save(function (error) {
                 if (error) {
                     callback(error);
